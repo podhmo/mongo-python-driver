@@ -52,6 +52,7 @@ struct module_state {
     PyObject* BSONInt64;
     PyObject* Decimal128;
     PyObject* Mapping;
+    PyObject* Sequence;
     PyObject* CodecOptions;
 };
 
@@ -363,6 +364,7 @@ static int _load_python_objects(PyObject* module) {
         _load_object(&state->Decimal128, "bson.decimal128", "Decimal128") ||
         _load_object(&state->UUID, "uuid", "UUID") ||
         _load_object(&state->Mapping, "collections", "Mapping") ||
+        _load_object(&state->Sequence, "collections", "Sequence") ||
         _load_object(&state->CodecOptions, "bson.codec_options", "CodecOptions")) {
         return 1;
     }
@@ -688,6 +690,7 @@ static int _write_element_to_buffer(PyObject* self, buffer_t buffer,
                                     const codec_options_t* options) {
     struct module_state *state = GETSTATE(self);
     PyObject* mapping_type;
+    PyObject* sequence_type;
     PyObject* uuid_type;
     /*
      * Don't use PyObject_IsInstance for our custom types. It causes
@@ -1045,6 +1048,9 @@ static int _write_element_to_buffer(PyObject* self, buffer_t buffer,
         *(buffer_get_buffer(buffer) + type_byte) = 0x03;
         return write_dict(self, buffer, value, check_keys, options, 0);
     } else if (PyList_Check(value) || PyTuple_Check(value)) {
+
+    on_sequence:;
+
         Py_ssize_t items, i;
         int start_position,
             length_location,
@@ -1195,7 +1201,7 @@ static int _write_element_to_buffer(PyObject* self, buffer_t buffer,
     }
     
     /* 
-     * Try Mapping and UUID last since we have to import
+     * Try Mapping and Sequence and UUID last since we have to import
      * them if we're in a sub-interpreter.
      */
     mapping_type = _get_object(state->Mapping, "collections", "Mapping");
@@ -1207,6 +1213,16 @@ static int _write_element_to_buffer(PyObject* self, buffer_t buffer,
         }
         *(buffer_get_buffer(buffer) + type_byte) = 0x03;
         return write_dict(self, buffer, value, check_keys, options, 0);
+    }
+
+    sequence_type = _get_object(state->Sequence, "collections", "Sequence");
+    if (sequence_type && PyObject_IsInstance(value, sequence_type)) {
+        Py_DECREF(sequence_type);
+        /* PyObject_IsInstance returns -1 on error */
+        if (PyErr_Occurred()) {
+            return 0;
+        }
+        goto on_sequence;
     }
 
     uuid_type = _get_object(state->UUID, "uuid", "UUID");
@@ -1279,6 +1295,7 @@ static int _write_element_to_buffer(PyObject* self, buffer_t buffer,
         Py_DECREF(bytes);
         return 1;
     }
+    Py_XDECREF(sequence_type);
     Py_XDECREF(mapping_type);
     Py_XDECREF(uuid_type);
     /* We can't determine value's type. Fail. */
